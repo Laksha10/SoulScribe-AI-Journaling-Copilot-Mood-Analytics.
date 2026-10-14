@@ -1,7 +1,7 @@
 # File: utils/llm_response.py
 
 import os
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 from db.models import JournalEntry
 from sqlalchemy import asc
@@ -11,27 +11,28 @@ load_dotenv()
 
 # Configure Gemini API key
 api_key = os.getenv("GEMINI_API_KEY")
+client = None
 if not api_key:
     print("❌ GEMINI_API_KEY not found in .env")
 else:
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
 # Define model priorities
-PRIMARY_MODEL = "models/gemini-1.5-pro"
-FALLBACK_MODEL = "models/gemini-1.5-flash"
+PRIMARY_MODEL = "gemini-3.6-flash"          # main SoulScribe reply
+FALLBACK_MODEL = "gemini-3.5-flash-lite"    # backup if the primary call fails
+THEME_MODEL = "gemini-3.5-flash-lite"       # recurring-themes summary
 def clean_soulscribe_response(text):
     return re.sub(r"^SoulScribe:\s*", "", text.strip())
 
 def generate_response_with_model(model_name, prompt):
     try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(model=model_name, contents=prompt)
         return response.text.strip()
     except Exception as e:
         print(f"❌ Error with model {model_name}:", str(e))
         return None
 
-def summarize_themes_from_history(entries, model="models/gemini-1.5-flash"):
+def summarize_themes_from_history(entries, model=THEME_MODEL):
     journal_texts = [entry.text for entry in entries if entry.role == "user"]
     if not journal_texts:
         return ""
@@ -72,7 +73,7 @@ def get_llm_response(predicted_emotions, user_input, thread_id=None, max_history
                 history_lines.append(f"User: {entry.text}")
             else:
                 history_lines.append(f"SoulScribe: {entry.text}")
-        
+
         # Trim to last N user-soul pairs
         history_lines = history_lines[-(max_history * 2):]
 
@@ -102,8 +103,8 @@ def get_llm_response(predicted_emotions, user_input, thread_id=None, max_history
     if message:
         return clean_soulscribe_response(message)
 
-    # Fallback to flash
-    print("🔁 Falling back to flash model...")
+    # Fallback to flash-lite
+    print("🔁 Falling back to flash-lite model...")
     message = generate_response_with_model(FALLBACK_MODEL, prompt)
     if message:
             return clean_soulscribe_response(message)
