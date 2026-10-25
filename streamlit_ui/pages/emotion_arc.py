@@ -1,4 +1,4 @@
-
+#file: streamlit_ui/pages/emotion_arc.py
 # 🔸 EMOTIONAL ARC PAGE
 import os
 import streamlit as st
@@ -124,7 +124,7 @@ POSITIVE_EMOTIONS = {"admiration", "amusement", "approval", "caring", "curiosity
 NEGATIVE_EMOTIONS = {"anger", "annoyance", "disappointment", "disapproval", "disgust", "embarrassment", "fear", "grief", "remorse", "sadness","confusion", "nervousness"}
 NEUTRAL_EMOTIONS = {"desire","surprise", "realization"}
 
-# === Net score calculation (needed for red zone detection regardless of scoreboard toggle) ===
+# === Net score calculation (for the scoreboard chart) ===
 net_scores = []
 for s in sessions:
     score = 0
@@ -136,10 +136,19 @@ for s in sessions:
                 score -= 1
     net_scores.append(score)
 
-# Red zone detection
-total_sessions = len(net_scores)
-negative_sessions = sum(1 for score in net_scores if score < 0)
-red_zone_triggered = total_sessions > 0 and (negative_sessions / total_sessions) >= 0.6
+# Red zone detection: decided by the backend (last up to 14 sessions from the
+# past 30 days, min 5, 60%+ net negative, one check-in a day, 7-day cool-off)
+red_zone_status = {}
+try:
+    status_res = requests.get(f"{BACKEND_URL}/emotional_status", headers=headers)
+    if status_res.status_code == 200:
+        red_zone_status = status_res.json()
+except Exception:
+    red_zone_status = {}
+
+red_zone_triggered = (
+    red_zone_status.get("status") == "red_zone" and red_zone_status.get("show_checkin", False)
+)
 
 
 # === Emotion Definitions ===
@@ -501,10 +510,6 @@ if check_scoreboard == "Yes":
                     score -= 1
     
 
-    # Red zone detection
-    total_sessions = len(net_scores)
-    negative_sessions = sum(1 for score in net_scores if score < 0)
-    red_zone_triggered = total_sessions >0 and (negative_sessions / total_sessions) >= 0.6
 
     fig_line = go.Figure()
     # Glowing shadow layer (bigger, transparent)
@@ -563,6 +568,10 @@ if check_scoreboard == "Yes":
 
     import requests
 
+# Cool-off after an escalation: tell the user, no check-in
+if red_zone_status.get("status") == "cool_off":
+    st.info("💌 " + red_zone_status.get("message", "Your trusted contacts were sent a gentle note recently."))
+
 # Red Zone Trigger Check
 if red_zone_triggered:
     headers = {"Authorization": f"Bearer {st.session_state['auth_token']}"}
@@ -619,7 +628,7 @@ if red_zone_triggered:
     st.markdown("""
     <div class="red-zone-box">
         <strong>🚨 Emotional Red Zone:</strong><br>
-        More than 60% of your recent sessions show a net negative emotional score. This may signal emotional fatigue or stress accumulation.<br><br>
+        60% or more of your recent sessions show a net negative emotional score. This may signal emotional fatigue or stress accumulation.<br><br>
         You may want to talk to someone you trust or try a calming activity.
         <em>"Even storms pass. Let yourself rest."</em>
     </div>
@@ -745,8 +754,11 @@ if red_zone_triggered:
             payload["did_grounding"] = True
 
         res = requests.post(f"{BACKEND_URL}/user/settings/red_zone_log", json=payload, headers=headers)
+        res_data = res.json() if res.status_code == 200 else {}
 
-        if res.status_code == 200:
+        if res.status_code == 200 and not res_data.get("logged", True):
+            st.info(res_data.get("message", "Response already noted today."))
+        elif res.status_code == 200:
             if payload["did_contact"]:
               st.markdown("""
             <div style='background-color: #e0fbfc; color: #2e2e38;
@@ -779,3 +791,6 @@ if red_zone_triggered:
         ❌ Failed to log your response. Please try again.
         </div>
     """, unsafe_allow_html=True)
+
+        if res_data.get("escalated"):
+            st.info("💌 Since the last few check-ins were skipped, we sent your trusted contacts a gentle note to check in on you. Check-ins will pause for a week.")

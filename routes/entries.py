@@ -1,3 +1,4 @@
+#files: routes/entries.py
 from flask import Blueprint, request, jsonify
 from db.connection import db
 from db.models import JournalEntry

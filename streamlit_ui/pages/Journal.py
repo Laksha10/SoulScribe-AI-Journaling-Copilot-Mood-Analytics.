@@ -1,3 +1,4 @@
+#file: streamlit_ui/pages/Journal.py
 import streamlit as st
 import requests
 import sys

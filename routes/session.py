@@ -1,3 +1,4 @@
+#files: routes/session.py
 from flask import Blueprint, jsonify, g
 from utils.auth2 import token_required
 from db.models import Session

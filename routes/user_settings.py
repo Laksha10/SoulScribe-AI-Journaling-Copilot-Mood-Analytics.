@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify, current_app
 from db.connection import db
 from db.models import User, UserSupportContact, UserCopingActivity, Session, UserRedZoneLog
 import jwt
-from datetime import datetime
+from datetime import datetime, timedelta
 from pytz import timezone
 from utils.email import send_email
 
@@ -12,6 +12,10 @@ user_settings_bp = Blueprint("user_settings", __name__, url_prefix="/user/settin
 
 def now_ist():
     return datetime.now(timezone("Asia/Kolkata"))
+
+# Same values as routes/emotion_monitor.py
+CHECKIN_GAP_HOURS = 24  # at most one check-in response logged per day
+COOL_OFF_DAYS = 7       # no check-ins for 7 days after an escalation
 
 def get_user_from_token():
     auth_header = request.headers.get("Authorization", "")
@@ -42,7 +46,8 @@ def get_user_settings():
                 "id": c.id,
                 "name": c.name,
                 "relation": c.relationship,
-                "email": c.email
+                "email": c.email,
+                "ok_to_notify": c.ok_to_notify
             } for c in contacts
         ],
         "coping_activities": [a.label for a in activities]
@@ -68,7 +73,8 @@ def update_user_settings():
                 user_id=user.id,
                 name=contact["name"],
                 relationship=contact.get("relationship", ""),
-                email=contact["email"]
+                email=contact["email"],
+                ok_to_notify=bool(contact.get("ok_to_notify", False))
             ))
     for activity in new_activities:
         db.session.add(UserCopingActivity(user_id=user.id, label=activity))
@@ -104,6 +110,28 @@ def log_red_zone_response():
     )
     current_batch = last_log.batch_id if last_log else 1
 
+    now = now_ist()
+
+    # No check-ins during the cool-off after an escalation
+    last_escalation = (
+        UserRedZoneLog.query
+        .filter_by(user_id=user.id, escalation_sent=True)
+        .order_by(UserRedZoneLog.triggered_at.desc())
+        .first()
+    )
+    if last_escalation and now - last_escalation.triggered_at < timedelta(days=COOL_OFF_DAYS):
+        return jsonify({"message": "In cool-off period, response not logged", "logged": False}), 200
+
+    # At most one check-in response per day, so 3 strikes = 3 separate days
+    latest_log = (
+        UserRedZoneLog.query
+        .filter_by(user_id=user.id)
+        .order_by(UserRedZoneLog.triggered_at.desc())
+        .first()
+    )
+    if latest_log and now - latest_log.triggered_at < timedelta(hours=CHECKIN_GAP_HOURS):
+        return jsonify({"message": "Already checked in today", "logged": False}), 200
+
     # Create new log
     log = UserRedZoneLog(
         user_id=user.id,
@@ -116,6 +144,8 @@ def log_red_zone_response():
     )
     db.session.add(log)
     db.session.commit()
+
+    escalated = False
 
     # Check last 3 logs in this batch
     last_logs = (
@@ -130,7 +160,8 @@ def log_red_zone_response():
 
     # Escalate if 3 ignored
     if len(last_logs) == 3 and ignored_streak:
-        contacts = UserSupportContact.query.filter_by(user_id=user.id).all()
+        # Only contacts who agreed to be notified
+        contacts = UserSupportContact.query.filter_by(user_id=user.id, ok_to_notify=True).all()
         if contacts:
             for contact in contacts:
                 send_email(
@@ -154,14 +185,12 @@ def log_red_zone_response():
                 l.escalation_sent = True
             db.session.commit()
 
-            # Increment batch for next entries
-            current_batch = current_batch + 1
-
-            print("🚨 Escalation emails sent. New batch started.")
+            escalated = True
+            print("🚨 Escalation emails sent. Cool-off started.")
         else:
-            print("⚠️ No support contacts found for escalation.")
+            print("⚠️ No consenting support contacts found for escalation.")
 
-    return jsonify({"message": "Red zone response logged"}), 200
+    return jsonify({"message": "Red zone response logged", "logged": True, "escalated": escalated}), 200
 
 
 
